@@ -47,8 +47,15 @@ pub struct DeviceInfo {
 
 pub static DEVICES: LazyLock<DashMap<String, DeviceInfo>> = LazyLock::new(DashMap::new);
 
+#[cfg(test)]
+pub static TEST_CONFIG_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
 /// Get the application configuration directory.
 pub fn config_dir() -> std::path::PathBuf {
+	#[cfg(test)]
+	if let Some(dir) = TEST_CONFIG_DIR.get() {
+		return dir.clone();
+	}
 	let app_handle = crate::APP_HANDLE.get().unwrap();
 	app_handle.path().app_config_dir().unwrap()
 }

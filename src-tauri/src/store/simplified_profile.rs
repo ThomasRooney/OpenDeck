@@ -108,7 +108,7 @@ impl From<ActionInstance> for DiskActionInstance {
 					};
 					data
 				} else {
-					state.image.split_once(',').unwrap().1.as_bytes().to_vec()
+					urlencoding::decode_binary(state.image.split_once(',').unwrap().1.as_bytes()).into_owned()
 				};
 
 				let filename = format!("{}.{}", index, extension);
@@ -230,5 +230,74 @@ impl super::FromAndIntoDiskValue for Profile {
 	fn from_value(value: serde_json::Value, path: &Path) -> Result<Profile, serde_json::Error> {
 		let disk: DiskProfile = serde_json::from_value(value)?;
 		Ok(disk.into_profile(path))
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn data_url_images_survive_save_and_reload() {
+		let config_dir = std::env::temp_dir().join(format!("opendeck-profile-test-{}", std::process::id()));
+		let _ = fs::remove_dir_all(&config_dir);
+		crate::shared::TEST_CONFIG_DIR.set(config_dir.clone()).unwrap();
+
+		// Payload pairs of (image as a plugin would pass to setImage, bytes the
+		// frontend rendered live and must be served after a reload).
+		let cases: [(&str, &[u8]); 3] = [
+			(
+				"data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3C%2Fsvg%3E",
+				br#"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#,
+			),
+			(
+				r#"data:image/svg+xml,<svg width="100%" x="a+b" data-value="%GG"></svg>"#,
+				br#"<svg width="100%" x="a+b" data-value="%GG"></svg>"#,
+			),
+			("data:image/png;base64,iVBORw0KGgo=", b"\x89PNG\r\n\x1a\n"),
+		];
+
+		let profile = Profile {
+			id: "test-profile".to_owned(),
+			keys: vec![Some(ActionInstance {
+				action: serde_json::from_value(serde_json::json!({
+					"name": "Test action",
+					"uuid": "test.action",
+					"states": []
+				}))
+				.unwrap(),
+				context: ActionContext {
+					device: "test-device".to_owned(),
+					profile: "test-profile".to_owned(),
+					controller: "Keypad".to_owned(),
+					position: 0,
+					index: 0,
+				},
+				states: cases
+					.iter()
+					.map(|(image, _)| ActionState {
+						image: (*image).to_owned(),
+						..Default::default()
+					})
+					.collect(),
+				current_state: 0,
+				settings: serde_json::Value::Null,
+				children: None,
+			})],
+			sliders: vec![],
+			infobars: vec![],
+			stale: false,
+		};
+
+		let saved = serde_json::to_value(DiskProfile::from(&profile)).unwrap();
+		let profile_path = config_dir.join("profiles").join("test-device").join("test-profile.json");
+		let reloaded: DiskProfile = serde_json::from_value(saved).unwrap();
+		let reloaded = reloaded.into_profile(&profile_path);
+
+		for (index, (_, expected)) in cases.iter().enumerate() {
+			let image = &reloaded.keys[0].as_ref().unwrap().states[index].image;
+			assert_eq!(fs::read(image).unwrap(), *expected, "state {index} must serve what rendered live");
+		}
+		let _ = fs::remove_dir_all(&config_dir);
 	}
 }
